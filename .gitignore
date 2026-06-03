@@ -1,0 +1,49 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env.bak/
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local editor and OS state
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Human-only local notes
+TODO
+TODO.*
+
+# Training outputs and experiment artifacts
+runs/
+logs/
+wandb/
+tensorboard/
+checkpoints/
+models/
+outputs/
+results/
+videos/
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.pickle
+*.npy
+*.npz
+
+# Temporary files
+*.tmp
+*.temp
+*.log
