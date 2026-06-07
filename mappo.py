@@ -1,11 +1,16 @@
 import torch
 import tyro
+import copy
 import datetime
+import json
+import os
 import random
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 from dataclasses import dataclass
+from pathlib import Path
+import shutil
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
@@ -19,6 +24,8 @@ class Args:
     """ Name of the environment"""
     env_family: str = "mpe"
     """ Env family when using pz"""
+    env_config_path: str | None = None
+    """ Path to a UTF-8 JSON file with environment config overrides"""
     agent_ids: bool = True
     """ Include id (one-hot vector) at the agent of the observations"""
     batch_size: int = 3
@@ -63,6 +70,16 @@ class Args:
     """ Evaluate the policy each «eval_steps» training steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
+    save_checkpoints: bool = True
+    """ Save actor policy checkpoints during and after training"""
+    checkpoint_dir: str = "runs"
+    """ Root directory for TensorBoard events and policy checkpoints"""
+    checkpoint_interval: int = 0
+    """ Save a checkpoint every N evaluations; disabled when 0"""
+    checkpoint_best_metric: str = "eval/ep_reward"
+    """ Evaluation metric used to select the best checkpoint"""
+    checkpoint_best_mode: str = "max"
+    """ Best checkpoint mode: max or min"""
     use_wnb: bool = False
     """ Logging to Weights & Biases if True"""
     wnb_project: str = ""
@@ -73,6 +90,17 @@ class Args:
     """ Device (cpu, cuda, mps)"""
     seed: int = 1
     """ Random seed"""
+
+    def __post_init__(self):
+        if self.checkpoint_best_mode not in {"max", "min"}:
+            raise ValueError(
+                "checkpoint_best_mode must be 'max' or 'min', "
+                f"got {self.checkpoint_best_mode!r}"
+            )
+        if self.checkpoint_interval < 0:
+            raise ValueError(
+                f"checkpoint_interval must be >= 0, got {self.checkpoint_interval}"
+            )
 
 
 class RolloutBuffer:
@@ -213,24 +241,24 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
 
 
 def environment(env_type, env_name, env_family, agent_ids, kwargs):
-    if env_type == "pz":
-        from env.pettingzoo_wrapper import PettingZooWrapper
-
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
-    elif env_type == "smaclite":
-        from env.smaclite_wrapper import SMACliteWrapper
-
-        env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
-    elif env_type == "lbf":
-        from env.lbf import LBFWrapper
-
-        env = LBFWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
-    elif env_type == "highway":
+    if env_type == "highway":
         from env.highway_wrapper import HighwayWrapper
 
         env = HighwayWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
+    # elif env_type == "smaclite":
+    #     from env.smaclite_wrapper import SMACliteWrapper
+
+    #     env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
+    # elif env_type == "lbf":
+    #     from env.lbf import LBFWrapper
+
+    #     env = LBFWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
+    # elif env_type == "pz":
+    #     from env.pettingzoo_wrapper import PettingZooWrapper
+
+    #     env = PettingZooWrapper(
+    #         family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
+    #     )
     else:
         raise ValueError(f"Unsupported env_type: {env_type}")
 
@@ -278,6 +306,91 @@ def shared_scalar_reward(reward):
     )
 
 
+def json_default(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, os.PathLike):
+        return str(value)
+    if isinstance(value, (set, tuple)):
+        return list(value)
+    return repr(value)
+
+
+def format_json(value):
+    return json.dumps(
+        value,
+        indent=2,
+        sort_keys=True,
+        ensure_ascii=False,
+        default=json_default,
+    )
+
+
+def load_env_config(path):
+    if path is None:
+        return {}
+
+    config_path = Path(path)
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "env_config_path must be valid JSON: "
+            f"{config_path} (line {exc.lineno}, column {exc.colno}: {exc.msg})"
+        ) from exc
+    except OSError as exc:
+        raise ValueError(f"Failed to read env_config_path {config_path}: {exc}") from exc
+
+    if not isinstance(config, dict):
+        raise ValueError(
+            "env_config_path must contain a JSON object at the top level: "
+            f"{config_path}"
+        )
+    return config
+
+
+def markdown_table_value(value):
+    if isinstance(value, (dict, list, tuple, set)):
+        text = format_json(value)
+    elif isinstance(value, (np.ndarray, np.generic, os.PathLike)):
+        text = str(json_default(value))
+    else:
+        text = str(value)
+    return text.replace("\n", "<br>").replace("|", "\\|")
+
+
+def save_actor_checkpoint(
+    path,
+    actor,
+    args,
+    env_config,
+    step,
+    training_step,
+    num_episodes,
+    eval_index,
+    checkpoint_type,
+    eval_metrics,
+    best_metric_value,
+):
+    payload = {
+        "actor_state_dict": {
+            name: value.detach().cpu() for name, value in actor.state_dict().items()
+        },
+        "args": vars(args).copy(),
+        "env_config": copy.deepcopy(env_config),
+        "step": step,
+        "training_step": training_step,
+        "num_episodes": num_episodes,
+        "eval_index": eval_index,
+        "checkpoint_type": checkpoint_type,
+        "eval_metrics": None if eval_metrics is None else dict(eval_metrics),
+        "best_metric_value": best_metric_value,
+    }
+    torch.save(payload, path)
+
+
 if __name__ == "__main__":
     args = tyro.cli(Args)
     seed = args.seed
@@ -286,20 +399,20 @@ if __name__ == "__main__":
     torch.manual_seed(seed)
     device = torch.device(args.device)
     ## import the environment
-    kwargs = {}  # {"render_mode":'human',"shared_reward":False}
+    kwargs = load_env_config(args.env_config_path)
     env = environment(
         env_type=args.env_type,
         env_name=args.env_name,
         env_family=args.env_family,
         agent_ids=args.agent_ids,
-        kwargs=kwargs,
+        kwargs=copy.deepcopy(kwargs),
     )
     eval_env = environment(
         env_type=args.env_type,
         env_name=args.env_name,
         env_family=args.env_family,
         agent_ids=args.agent_ids,
-        kwargs=kwargs,
+        kwargs=copy.deepcopy(kwargs),
     )
 
     ## Initialize the actor, critic and target-critic networks
@@ -321,6 +434,9 @@ if __name__ == "__main__":
 
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{time_token}"
+    run_dir = Path(args.checkpoint_dir) / f"MAPPO-{run_name}"
+    if args.save_checkpoints:
+        run_dir.mkdir(parents=True, exist_ok=True)
     if args.use_wnb:
         import wandb
 
@@ -331,11 +447,38 @@ if __name__ == "__main__":
             config=vars(args),
             name=f"MAPPO-{run_name}",
         )
-    writer = SummaryWriter(f"runs/MAPPO-{run_name}")
+    writer = SummaryWriter(str(run_dir))
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s"
         % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+    )
+    env_summary = [
+        ("env_type", args.env_type),
+        ("env_name", args.env_name),
+        ("env_family", args.env_family),
+        ("env_config_path", args.env_config_path),
+        ("agent_ids", args.agent_ids),
+        ("env_class", type(env).__name__),
+        ("n_agents", env.n_agents),
+        ("obs_size", env.get_obs_size()),
+        ("state_size", env.get_state_size()),
+        ("action_size", env.get_action_size()),
+        ("constructor_kwargs", kwargs),
+    ]
+    writer.add_text(
+        "environment/summary",
+        "|param|value|\n|-|-|\n%s"
+        % (
+            "\n".join(
+                f"|{key}|{markdown_table_value(value)}|"
+                for key, value in env_summary
+            )
+        ),
+    )
+    writer.add_text(
+        "environment/config",
+        "```json\n%s\n```" % format_json(getattr(env, "config", {})),
     )
 
     rb = RolloutBuffer(
@@ -353,6 +496,9 @@ if __name__ == "__main__":
     training_step = 0
     num_episodes = 0
     step = 0
+    eval_index = 0
+    best_metric_value = None
+    last_eval_metrics = None
     while step < args.total_timesteps:
         num_episode = 0
         while num_episode < args.batch_size:
@@ -627,16 +773,81 @@ if __name__ == "__main__":
                     current_reward = 0
                     current_ep_length = 0
                     eval_ep += 1
-            writer.add_scalar("eval/ep_reward", np.mean(eval_ep_reward), step)
-            writer.add_scalar("eval/std_ep_reward", np.std(eval_ep_reward), step)
-            writer.add_scalar("eval/ep_length", np.mean(eval_ep_length), step)
+            eval_metrics = {
+                "eval/ep_reward": float(np.mean(eval_ep_reward)),
+                "eval/std_ep_reward": float(np.std(eval_ep_reward)),
+                "eval/ep_length": float(np.mean(eval_ep_length)),
+            }
             if args.env_type == "smaclite":
-                writer.add_scalar(
-                    "eval/battle_won",
-                    np.mean([info["battle_won"] for info in eval_ep_stats]),
-                    step,
+                eval_metrics["eval/battle_won"] = float(
+                    np.mean([info["battle_won"] for info in eval_ep_stats])
                 )
+            for metric_name, metric_value in eval_metrics.items():
+                writer.add_scalar(metric_name, metric_value, step)
+
+            eval_index += 1
+            last_eval_metrics = eval_metrics
+            if args.save_checkpoints:
+                if args.checkpoint_best_metric not in eval_metrics:
+                    available_metrics = ", ".join(sorted(eval_metrics))
+                    raise ValueError(
+                        "checkpoint_best_metric must match an evaluation metric, "
+                        f"got {args.checkpoint_best_metric!r}. "
+                        f"Available metrics: {available_metrics}"
+                    )
+
+                current_metric_value = eval_metrics[args.checkpoint_best_metric]
+                is_best = (
+                    best_metric_value is None
+                    or (
+                        args.checkpoint_best_mode == "max"
+                        and current_metric_value > best_metric_value
+                    )
+                    or (
+                        args.checkpoint_best_mode == "min"
+                        and current_metric_value < best_metric_value
+                    )
+                )
+                if is_best:
+                    best_metric_value = current_metric_value
+                    save_actor_checkpoint(
+                        run_dir / "checkpoint_best.pt",
+                        actor, args, kwargs, step, training_step, num_episodes,
+                        eval_index, "best", eval_metrics, best_metric_value,
+                    )
+                if (
+                    args.checkpoint_interval > 0
+                    and eval_index % args.checkpoint_interval == 0
+                ):
+                    interval_path = (
+                        run_dir / f"checkpoint_eval_{eval_index:06d}.pt"
+                    )
+                    if is_best:
+                        shutil.copy(
+                            run_dir / "checkpoint_best.pt", interval_path
+                        )
+                    else:
+                        save_actor_checkpoint(
+                            interval_path,
+                            actor, args, kwargs, step, training_step, num_episodes,
+                            eval_index, "eval", eval_metrics, best_metric_value,
+                        )
             actor.train()
+
+    if args.save_checkpoints:
+        save_actor_checkpoint(
+            run_dir / "checkpoint_final.pt",
+            actor,
+            args,
+            kwargs,
+            step,
+            training_step,
+            num_episodes,
+            eval_index,
+            "final",
+            last_eval_metrics,
+            best_metric_value,
+        )
 
     writer.close()
     if args.use_wnb:

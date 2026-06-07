@@ -2,9 +2,9 @@
 
 ## 提示
 
-- 不要阅读任何 TODO 文件。TODO 文件是给人类用户的，不属于 agent 上下文。
+- TODO 文件是给人类用户的，不属于 agent 上下文。
 - 在中文 Windows 上使用 PowerShell 5.1 读写 UTF-8 文件时，必须显式指定 `-Encoding UTF8` 参数。
-- 如果需要写临时的脚本，遇到转义、here-string、编码问题，可以在 scripts/ 下写入临时脚本，规避命令行中的各种问题。
+- 需要写脚本，遇到转义、here-string、here-doc、编码问题，或可复用脚本，都推荐在 scripts/ 下写入文本并运行。
 
 ## 仓库概览
 
