@@ -11,19 +11,19 @@ cd C:\Users\admin\Project\inter-baseline
 实际训练命令：
 
 ```powershell
-uv run python .\mappo.py --env-type highway --env-name intersection-multi-agent-v1 --device cpu --total-timesteps 1000000 --batch-size 3 --eval-steps 10 --num-eval-ep 10
+uv run python mappo.py --env-type highway --env-name intersection-multi-agent-v1 --device cpu --total-timesteps 1000000 --batch-size 3 --eval-steps 10 --num-eval-ep 10
 ```
 
 快速冒烟训练：
 
 ```powershell
-uv run python .\mappo.py --env-type highway --env-name intersection-multi-agent-v1 --device cpu --total-timesteps 5000 --batch-size 3 --eval-steps 5 --num-eval-ep 2 --checkpoint-dir runs\smoke
+uv run python mappo.py --env-type highway --env-name intersection-multi-agent-v1 --device cpu --total-timesteps 5000 --batch-size 3 --eval-steps 5 --num-eval-ep 2 --checkpoint-dir runs\smoke
 ```
 
 如果要传入 highway-env 配置覆盖，使用 UTF-8 JSON 文件：
 
 ```powershell
-uv run python .\mappo.py --env-type highway --env-name intersection-multi-agent-v1 --env-config-path .\path\to\env_config.json --device cpu
+uv run python mappo.py --env-type highway --env-name intersection-multi-agent-v1 --env-config-path path\to\env_config.json --device cpu
 ```
 
 训练输出目录形如：
@@ -55,20 +55,20 @@ runs\MAPPO-highway__intersection-multi-agent-v1__YYYY-MM-DD_HH-MM-SS\
 验证指定 checkpoint 的实际效果：
 
 ```powershell
-uv run python .\evaluate_checkpoint.py --checkpoint-path .\runs\MAPPO-highway__intersection-multi-agent-v1__2026-06-07_22-53-39\checkpoint_best.pt --num-episodes 5 --device cpu --deterministic --record-video --fps 15 --overlay
+uv run python evaluate_checkpoint.py --checkpoint-path runs\MAPPO-highway__intersection-multi-agent-v1__2026-06-07_22-53-39\checkpoint_best.pt --num-episodes 5 --device cpu --deterministic --record-video --fps 15 --overlay
 ```
 
 验证最新的 `checkpoint_best.pt`：
 
 ```powershell
-$ckpt = Get-ChildItem .\runs -Recurse -Filter checkpoint_best.pt | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-uv run python .\evaluate_checkpoint.py --checkpoint-path $ckpt.FullName --num-episodes 5 --device cpu --deterministic --record-video --fps 15 --overlay
+$ckpt = Get-ChildItem runs -Recurse -Filter checkpoint_best.pt | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+uv run python evaluate_checkpoint.py --checkpoint-path $ckpt.FullName --num-episodes 5 --device cpu --deterministic --record-video --fps 15 --overlay
 ```
 
 只看终端指标、不录视频：
 
 ```powershell
-uv run python .\evaluate_checkpoint.py --checkpoint-path .\runs\MAPPO-highway__intersection-multi-agent-v1__2026-06-07_22-53-39\checkpoint_best.pt --num-episodes 10 --device cpu --deterministic --no-record-video
+uv run python evaluate_checkpoint.py --checkpoint-path runs\MAPPO-highway__intersection-multi-agent-v1__2026-06-07_22-53-39\checkpoint_best.pt --num-episodes 10 --device cpu --deterministic --no-record-video
 ```
 
 验证脚本会从 checkpoint 里恢复训练时保存的 `env_type`、`env_name`、`agent_ids`、网络结构和 `env_config`。当前脚本会把 trace 固定写到 checkpoint 同目录：
@@ -100,7 +100,7 @@ checkpoint_best_ep001.mp4
 ## 环境 wrapper 快速检查
 
 ```powershell
-uv run python .\demo_highway_wrapper.py
+uv run python demo_highway_wrapper.py
 ```
 
 这个命令用于检查 `HighwayWrapper` 的观测维度、状态维度、动作维度、奖励和终止语义。
