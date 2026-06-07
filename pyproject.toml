@@ -1,0 +1,17 @@
+[project]
+name = "inter-baseline"
+version = "0.1.0"
+description = "MAPPO baseline experiments for highway-env multi-agent intersection."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "highway-env>=1.11",
+    "imageio>=2.37",
+    "imageio-ffmpeg>=0.6",
+    "numpy>=2.2",
+    "pillow>=12.0",
+    "pygame>=2.6",
+    "tensorboard>=2.20",
+    "torch>=2.12",
+    "tyro>=1.0",
+]
