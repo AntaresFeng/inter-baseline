@@ -122,18 +122,14 @@ class Args:
             )
         if self.attention_feature_dim <= 0:
             raise ValueError(
-                "attention_feature_dim must be > 0, "
-                f"got {self.attention_feature_dim}"
+                f"attention_feature_dim must be > 0, got {self.attention_feature_dim}"
             )
         if self.attention_embed_dim <= 0:
             raise ValueError(
-                "attention_embed_dim must be > 0, "
-                f"got {self.attention_embed_dim}"
+                f"attention_embed_dim must be > 0, got {self.attention_embed_dim}"
             )
         if self.attention_heads <= 0:
-            raise ValueError(
-                f"attention_heads must be > 0, got {self.attention_heads}"
-            )
+            raise ValueError(f"attention_heads must be > 0, got {self.attention_heads}")
         if self.attention_embed_dim % self.attention_heads != 0:
             raise ValueError(
                 "attention_embed_dim must be divisible by attention_heads, "
@@ -141,8 +137,7 @@ class Args:
             )
         if not (0 <= self.attention_dropout < 1):
             raise ValueError(
-                "attention_dropout must be in [0, 1), "
-                f"got {self.attention_dropout}"
+                f"attention_dropout must be in [0, 1), got {self.attention_dropout}"
             )
         if self.attention_presence_feature_idx < 0:
             raise ValueError(
@@ -396,9 +391,7 @@ class EgoAttention(nn.Module):
             query_ego, key_all, value_all, attention_mask, self.dropout
         )
         value = (
-            value.permute(0, 2, 1, 3)
-            .contiguous()
-            .view(batch_size, self.feature_size)
+            value.permute(0, 2, 1, 3).contiguous().view(batch_size, self.feature_size)
         )
         result = (self.attention_combine(value) + ego.squeeze(1)) / 2
         return result, attention_matrix
@@ -409,13 +402,10 @@ def validate_entity_shape(input_dim, entity_shape, presence_feature_idx, label):
         raise ValueError(f"{label} entity_shape must have 2 values, got {entity_shape}")
     entities, features = (int(entity_shape[0]), int(entity_shape[1]))
     if entities <= 0 or features <= 0:
-        raise ValueError(
-            f"{label} entity_shape values must be > 0, got {entity_shape}"
-        )
+        raise ValueError(f"{label} entity_shape values must be > 0, got {entity_shape}")
     if entities * features != input_dim:
         raise ValueError(
-            f"{label} entity_shape {entity_shape} does not match input_dim "
-            f"{input_dim}"
+            f"{label} entity_shape {entity_shape} does not match input_dim {input_dim}"
         )
     if presence_feature_idx >= features:
         raise ValueError(
@@ -536,9 +526,7 @@ class AttentionCritic(nn.Module):
         mask = entities[:, :, self.presence_feature_idx] < 0.5
         embedded = self.embedding(entities)
         empty_others = embedded[:, 1:, :]
-        self_att, _ = self.self_attention_layer(
-            embedded[:, 0:1, :], empty_others, mask
-        )
+        self_att, _ = self.self_attention_layer(embedded[:, 0:1, :], empty_others, mask)
 
         valid = (~mask).to(self_att.dtype).unsqueeze(-1)
         pooled = (self_att * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
@@ -751,7 +739,9 @@ def load_env_config(path):
             f"{config_path} (line {exc.lineno}, column {exc.colno}: {exc.msg})"
         ) from exc
     except OSError as exc:
-        raise ValueError(f"Failed to read env_config_path {config_path}: {exc}") from exc
+        raise ValueError(
+            f"Failed to read env_config_path {config_path}: {exc}"
+        ) from exc
 
     if not isinstance(config, dict):
         raise ValueError(
@@ -875,8 +865,7 @@ if __name__ == "__main__":
         "|param|value|\n|-|-|\n%s"
         % (
             "\n".join(
-                f"|{key}|{markdown_table_value(value)}|"
-                for key, value in env_summary
+                f"|{key}|{markdown_table_value(value)}|" for key, value in env_summary
             )
         ),
     )
@@ -1216,25 +1205,37 @@ if __name__ == "__main__":
                     best_metric_value = current_metric_value
                     save_actor_checkpoint(
                         run_dir / "checkpoint_best.pt",
-                        actor, args, kwargs, step, training_step, num_episodes,
-                        eval_index, "best", eval_metrics, best_metric_value,
+                        actor,
+                        args,
+                        kwargs,
+                        step,
+                        training_step,
+                        num_episodes,
+                        eval_index,
+                        "best",
+                        eval_metrics,
+                        best_metric_value,
                     )
                 if (
                     args.checkpoint_interval > 0
                     and eval_index % args.checkpoint_interval == 0
                 ):
-                    interval_path = (
-                        run_dir / f"checkpoint_eval_{eval_index:06d}.pt"
-                    )
+                    interval_path = run_dir / f"checkpoint_eval_{eval_index:06d}.pt"
                     if is_best:
-                        shutil.copy(
-                            run_dir / "checkpoint_best.pt", interval_path
-                        )
+                        shutil.copy(run_dir / "checkpoint_best.pt", interval_path)
                     else:
                         save_actor_checkpoint(
                             interval_path,
-                            actor, args, kwargs, step, training_step, num_episodes,
-                            eval_index, "eval", eval_metrics, best_metric_value,
+                            actor,
+                            args,
+                            kwargs,
+                            step,
+                            training_step,
+                            num_episodes,
+                            eval_index,
+                            "eval",
+                            eval_metrics,
+                            best_metric_value,
                         )
             actor.train()
 

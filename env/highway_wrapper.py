@@ -221,9 +221,7 @@ class HighwayWrapper(MultiAgentIntersectionEnv):
         info["agents_rewards"] = agents_rewards
         info["agents_terminated"] = agents_terminated
         info["agents_arrived"] = tuple(bool(v) for v in self.agents_arrived)
-        info["agents_newly_arrived"] = tuple(
-            bool(v) for v in self.agents_newly_arrived
-        )
+        info["agents_newly_arrived"] = tuple(bool(v) for v in self.agents_newly_arrived)
         info["agents_active"] = tuple(bool(v) for v in self.agents_active)
         return info
 

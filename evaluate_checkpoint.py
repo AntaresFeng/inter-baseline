@@ -10,7 +10,14 @@ import tyro
 from PIL import Image, ImageDraw, ImageFont
 from torch.distributions.categorical import Categorical
 
-from mappo import Actor, environment, reset_env, scalar_flag, shared_scalar_reward
+from mappo import (
+    Args as TrainArgs,
+    environment,
+    make_actor,
+    reset_env,
+    scalar_flag,
+    shared_scalar_reward,
+)
 
 
 @dataclass
@@ -133,8 +140,14 @@ def draw_panel(image, lines, xy, max_width, font, title=None):
         outline=(255, 255, 255, 70),
     )
     for idx, line in enumerate(lines):
-        fill = (255, 231, 150, 255) if title is not None and idx == 0 else (245, 245, 245, 255)
-        draw.text((x + padding, y + padding + idx * line_height), line, font=font, fill=fill)
+        fill = (
+            (255, 231, 150, 255)
+            if title is not None and idx == 0
+            else (245, 245, 245, 255)
+        )
+        draw.text(
+            (x + padding, y + padding + idx * line_height), line, font=font, fill=fill
+        )
     return panel_width, panel_height
 
 
@@ -156,8 +169,10 @@ def annotate_frame(frame, overlay_data):
         frame = np.stack([frame] * 3, axis=-1)
     if frame.shape[-1] == 4:
         frame = frame[..., :3]
-    image = Image.fromarray(frame.astype(np.uint8)).convert("RGB").resize(
-        (frame.shape[1], frame.shape[0])
+    image = (
+        Image.fromarray(frame.astype(np.uint8))
+        .convert("RGB")
+        .resize((frame.shape[1], frame.shape[0]))
     )
     font = load_font(13)
     width, height = image.size
@@ -311,6 +326,14 @@ def build_trace_payload(overlay_data):
     }
 
 
+def training_args_from_checkpoint(checkpoint_args):
+    train_args = TrainArgs()
+    for key, value in checkpoint_args.items():
+        if hasattr(train_args, key):
+            setattr(train_args, key, value)
+    return train_args
+
+
 def main():
     args = tyro.cli(Args)
     checkpoint_path = Path(args.checkpoint_path)
@@ -328,12 +351,7 @@ def main():
         agent_ids=checkpoint_args.get("agent_ids", True),
         kwargs=env_config,
     )
-    actor = Actor(
-        input_dim=env.get_obs_size(),
-        hidden_dim=int(checkpoint_args.get("actor_hidden_dim", 32)),
-        num_layer=int(checkpoint_args.get("actor_num_layers", 1)),
-        output_dim=env.get_action_size(),
-    ).to(device)
+    actor = make_actor(training_args_from_checkpoint(checkpoint_args), env).to(device)
     actor.load_state_dict(checkpoint["actor_state_dict"])
     actor.eval()
 
@@ -374,7 +392,9 @@ def main():
 
                 def current_overlay_data():
                     if last_overlay_data is None:
-                        raise RuntimeError("No overlay data available for frame capture.")
+                        raise RuntimeError(
+                            "No overlay data available for frame capture."
+                        )
                     return last_overlay_data
 
                 recorder = EvaluationFrameRecorder(
