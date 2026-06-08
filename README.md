@@ -11,7 +11,7 @@ cd C:\Users\admin\Project\inter-baseline
 实际训练命令：
 
 ```powershell
-uv run python mappo.py --env-type highway --env-name intersection-multi-agent-v1 --device cpu --total-timesteps 1000000 --batch-size 3 --eval-steps 10 --num-eval-ep 10
+uv run python mappo.py --env-type highway --env-name intersection-multi-agent-v1 --device cpu --total-timesteps 1000000
 ```
 
 快速冒烟训练：
@@ -23,7 +23,7 @@ uv run python mappo.py --env-type highway --env-name intersection-multi-agent-v1
 如果要传入 highway-env 配置覆盖，使用 UTF-8 JSON 文件：
 
 ```powershell
-uv run python mappo.py --env-type highway --env-name intersection-multi-agent-v1 --env-config-path path\to\env_config.json --device cpu
+uv run python mappo.py --env-type highway --env-name intersection-multi-agent-v1 --device cpu --env-config-path path\to\env_config.json --normalize_advantage --clip-gradients 1.0 --entropy-coef 0.005 --learning-rate-actor 0.0003 --learning-rate-critic 0.0005
 ```
 
 训练输出目录形如：

@@ -12,6 +12,7 @@
 - `env/`：环境封装与配置。
 - `demo_highway_wrapper.py`：highway 环境封装示例或快速验证入口。
 - `docs/highway_env_faq.md`：highway-env 环境疑难杂症参考。
+- `docs\highway_intersection_notes.md`：highway-env intersection 环境细节，目前包括动作空间说明和重置时速度
 
 ## 环境与工具
 

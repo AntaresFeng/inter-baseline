@@ -28,15 +28,15 @@ class Args:
     """ Path to a UTF-8 JSON file with environment config overrides"""
     agent_ids: bool = True
     """ Include id (one-hot vector) at the agent of the observations"""
-    batch_size: int = 3
+    batch_size: int = 8
     """ Number of episodes to collect in each rollout"""
-    actor_hidden_dim: int = 32
+    actor_hidden_dim: int = 128
     """ Hidden dimension of actor network"""
-    actor_num_layers: int = 1
+    actor_num_layers: int = 2
     """ Number of hidden layers of actor network"""
-    critic_hidden_dim: int = 64
+    critic_hidden_dim: int = 128
     """ Hidden dimension of critic network"""
-    critic_num_layers: int = 1
+    critic_num_layers: int = 2
     """ Number of hidden layers of critic network"""
     optimizer: str = "Adam"
     """ The optimizer"""
