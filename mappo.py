@@ -3,6 +3,7 @@ import tyro
 import copy
 import datetime
 import json
+import math
 import os
 import random
 import numpy as np
@@ -30,6 +31,10 @@ class Args:
     """ Include id (one-hot vector) at the agent of the observations"""
     batch_size: int = 8
     """ Number of episodes to collect in each rollout"""
+    actor_model: str = "mlp"
+    """Actor model type: mlp or attention"""
+    critic_model: str = "mlp"
+    """Critic model type: mlp or attention"""
     actor_hidden_dim: int = 128
     """ Hidden dimension of actor network"""
     actor_num_layers: int = 2
@@ -38,6 +43,16 @@ class Args:
     """ Hidden dimension of critic network"""
     critic_num_layers: int = 2
     """ Number of hidden layers of critic network"""
+    attention_feature_dim: int = 7
+    """Fallback features per entity when the environment does not expose shape metadata"""
+    attention_embed_dim: int = 64
+    """Entity embedding dimension for attention models"""
+    attention_heads: int = 2
+    """Number of attention heads"""
+    attention_dropout: float = 0.0
+    """Dropout probability applied to attention weights"""
+    attention_presence_feature_idx: int = 0
+    """Feature index used as the entity presence mask"""
     optimizer: str = "Adam"
     """ The optimizer"""
     learning_rate_actor: float = 0.0008
@@ -92,6 +107,10 @@ class Args:
     """ Random seed"""
 
     def __post_init__(self):
+        for name in ["actor_model", "critic_model"]:
+            value = getattr(self, name)
+            if value not in {"mlp", "attention"}:
+                raise ValueError(f"{name} must be 'mlp' or 'attention', got {value!r}")
         if self.checkpoint_best_mode not in {"max", "min"}:
             raise ValueError(
                 "checkpoint_best_mode must be 'max' or 'min', "
@@ -100,6 +119,35 @@ class Args:
         if self.checkpoint_interval < 0:
             raise ValueError(
                 f"checkpoint_interval must be >= 0, got {self.checkpoint_interval}"
+            )
+        if self.attention_feature_dim <= 0:
+            raise ValueError(
+                "attention_feature_dim must be > 0, "
+                f"got {self.attention_feature_dim}"
+            )
+        if self.attention_embed_dim <= 0:
+            raise ValueError(
+                "attention_embed_dim must be > 0, "
+                f"got {self.attention_embed_dim}"
+            )
+        if self.attention_heads <= 0:
+            raise ValueError(
+                f"attention_heads must be > 0, got {self.attention_heads}"
+            )
+        if self.attention_embed_dim % self.attention_heads != 0:
+            raise ValueError(
+                "attention_embed_dim must be divisible by attention_heads, "
+                f"got {self.attention_embed_dim} and {self.attention_heads}"
+            )
+        if not (0 <= self.attention_dropout < 1):
+            raise ValueError(
+                "attention_dropout must be in [0, 1), "
+                f"got {self.attention_dropout}"
+            )
+        if self.attention_presence_feature_idx < 0:
+            raise ValueError(
+                "attention_presence_feature_idx must be >= 0, "
+                f"got {self.attention_presence_feature_idx}"
             )
 
 
@@ -235,6 +283,279 @@ class Critic(nn.Module):
         return x
 
 
+class EntityMLP(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim=None, num_layers=2) -> None:
+        super().__init__()
+        if num_layers < 1:
+            raise ValueError(f"num_layers must be >= 1, got {num_layers}")
+
+        layers = []
+        current_dim = input_dim
+        for _ in range(num_layers):
+            layers.extend([nn.Linear(current_dim, hidden_dim), nn.ReLU()])
+            current_dim = hidden_dim
+        if output_dim is not None:
+            layers.append(nn.Linear(current_dim, output_dim))
+        self.layers = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.layers(x)
+
+
+class SelfAttention(nn.Module):
+    def __init__(self, feature_size, heads, dropout_factor=0.0) -> None:
+        super().__init__()
+        if feature_size % heads != 0:
+            raise ValueError(
+                f"feature_size must be divisible by heads, got {feature_size}/{heads}"
+            )
+        self.feature_size = feature_size
+        self.heads = heads
+        self.features_per_head = feature_size // heads
+        self.value_all = nn.Linear(feature_size, feature_size, bias=False)
+        self.key_all = nn.Linear(feature_size, feature_size, bias=False)
+        self.query_all = nn.Linear(feature_size, feature_size, bias=False)
+        self.attention_combine = nn.Linear(feature_size, feature_size, bias=False)
+        self.dropout = nn.Dropout(dropout_factor)
+
+    def _project(self, layer, x):
+        batch_size, n_entities, _ = x.shape
+        return (
+            layer(x)
+            .view(batch_size, n_entities, self.heads, self.features_per_head)
+            .permute(0, 2, 1, 3)
+        )
+
+    def forward(self, ego, others, mask=None):
+        batch_size = ego.shape[0]
+        input_all = torch.cat((ego, others), dim=1)
+        n_entities = input_all.shape[1]
+
+        key_all = self._project(self.key_all, input_all)
+        value_all = self._project(self.value_all, input_all)
+        query_all = self._project(self.query_all, input_all)
+
+        attention_mask = None
+        if mask is not None:
+            attention_mask = mask.view(batch_size, 1, 1, n_entities)
+
+        value, attention_matrix = attention(
+            query_all, key_all, value_all, attention_mask, self.dropout
+        )
+        value = (
+            value.permute(0, 2, 1, 3)
+            .contiguous()
+            .view(batch_size, n_entities, self.feature_size)
+        )
+        result = (self.attention_combine(value) + input_all) / 2
+        return result, attention_matrix
+
+
+class EgoAttention(nn.Module):
+    def __init__(self, feature_size, heads, dropout_factor=0.0) -> None:
+        super().__init__()
+        if feature_size % heads != 0:
+            raise ValueError(
+                f"feature_size must be divisible by heads, got {feature_size}/{heads}"
+            )
+        self.feature_size = feature_size
+        self.heads = heads
+        self.features_per_head = feature_size // heads
+        self.value_all = nn.Linear(feature_size, feature_size, bias=False)
+        self.key_all = nn.Linear(feature_size, feature_size, bias=False)
+        self.query_ego = nn.Linear(feature_size, feature_size, bias=False)
+        self.attention_combine = nn.Linear(feature_size, feature_size, bias=False)
+        self.dropout = nn.Dropout(dropout_factor)
+
+    def _project_all(self, layer, x):
+        batch_size, n_entities, _ = x.shape
+        return (
+            layer(x)
+            .view(batch_size, n_entities, self.heads, self.features_per_head)
+            .permute(0, 2, 1, 3)
+        )
+
+    def forward(self, ego, others, mask=None):
+        batch_size = ego.shape[0]
+        input_all = torch.cat((ego, others), dim=1)
+        n_entities = input_all.shape[1]
+
+        key_all = self._project_all(self.key_all, input_all)
+        value_all = self._project_all(self.value_all, input_all)
+        query_ego = (
+            self.query_ego(ego)
+            .view(batch_size, 1, self.heads, self.features_per_head)
+            .permute(0, 2, 1, 3)
+        )
+
+        attention_mask = None
+        if mask is not None:
+            attention_mask = mask.view(batch_size, 1, 1, n_entities)
+
+        value, attention_matrix = attention(
+            query_ego, key_all, value_all, attention_mask, self.dropout
+        )
+        value = (
+            value.permute(0, 2, 1, 3)
+            .contiguous()
+            .view(batch_size, self.feature_size)
+        )
+        result = (self.attention_combine(value) + ego.squeeze(1)) / 2
+        return result, attention_matrix
+
+
+def validate_entity_shape(input_dim, entity_shape, presence_feature_idx, label):
+    if len(entity_shape) != 2:
+        raise ValueError(f"{label} entity_shape must have 2 values, got {entity_shape}")
+    entities, features = (int(entity_shape[0]), int(entity_shape[1]))
+    if entities <= 0 or features <= 0:
+        raise ValueError(
+            f"{label} entity_shape values must be > 0, got {entity_shape}"
+        )
+    if entities * features != input_dim:
+        raise ValueError(
+            f"{label} entity_shape {entity_shape} does not match input_dim "
+            f"{input_dim}"
+        )
+    if presence_feature_idx >= features:
+        raise ValueError(
+            f"attention_presence_feature_idx={presence_feature_idx} is out of "
+            f"range for {features} features"
+        )
+    return entities, features
+
+
+class AttentionActor(nn.Module):
+    def __init__(
+        self,
+        input_dim,
+        entity_shape,
+        output_dim,
+        embed_dim,
+        heads,
+        dropout_factor,
+        presence_feature_idx,
+    ) -> None:
+        super().__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.entity_count, self.feature_dim = validate_entity_shape(
+            input_dim, entity_shape, presence_feature_idx, "actor"
+        )
+        self.presence_feature_idx = presence_feature_idx
+
+        self.ego_embedding = EntityMLP(self.feature_dim, embed_dim)
+        self.others_embedding = EntityMLP(self.feature_dim, embed_dim)
+        self.self_attention_layer = SelfAttention(embed_dim, heads, dropout_factor)
+        self.attention_layer = EgoAttention(embed_dim, heads, dropout_factor)
+        self.output_layer = EntityMLP(embed_dim, embed_dim, output_dim)
+
+    def _reshape_entities(self, x):
+        if x.shape[-1] != self.input_dim:
+            raise ValueError(
+                f"Expected actor input last dimension {self.input_dim}, "
+                f"got {x.shape[-1]}"
+            )
+        leading_shape = x.shape[:-1]
+        entities = x.reshape(-1, self.entity_count, self.feature_dim)
+        return entities, leading_shape
+
+    def _split_input(self, entities):
+        ego = entities[:, 0:1, :]
+        others = entities[:, 1:, :]
+        mask = entities[:, :, self.presence_feature_idx] < 0.5
+        return ego, others, mask
+
+    def forward_attention(self, x):
+        entities, leading_shape = self._reshape_entities(x)
+        ego, others, mask = self._split_input(entities)
+        ego = self.ego_embedding(ego)
+        others = self.others_embedding(others)
+        self_att, _ = self.self_attention_layer(ego, others, mask)
+        ego = self_att[:, 0:1, :]
+        others = self_att[:, 1:, :]
+        ego_attention, attention_matrix = self.attention_layer(ego, others, mask)
+        return ego_attention, attention_matrix, leading_shape
+
+    def act(self, x, avail_action=None, deterministic=False):
+        logits = self.logits(x, avail_action)
+        distribution = Categorical(logits=logits)
+        if deterministic:
+            action = torch.argmax(logits, dim=-1)
+        else:
+            action = distribution.sample()
+        return action, distribution.log_prob(action)
+
+    def logits(self, x, avail_action=None):
+        ego_attention, _, leading_shape = self.forward_attention(x)
+        logits = self.output_layer(ego_attention).reshape(
+            *leading_shape, self.output_dim
+        )
+        if avail_action is not None:
+            logits = logits.masked_fill(~avail_action, -1e9)
+        return logits
+
+    def get_attention_matrix(self, x):
+        _, attention_matrix, leading_shape = self.forward_attention(x)
+        return attention_matrix.reshape(*leading_shape, *attention_matrix.shape[1:])
+
+
+class AttentionCritic(nn.Module):
+    def __init__(
+        self,
+        input_dim,
+        entity_shape,
+        embed_dim,
+        heads,
+        dropout_factor,
+        presence_feature_idx,
+    ) -> None:
+        super().__init__()
+        self.input_dim = input_dim
+        self.entity_count, self.feature_dim = validate_entity_shape(
+            input_dim, entity_shape, presence_feature_idx, "critic"
+        )
+        self.presence_feature_idx = presence_feature_idx
+
+        self.embedding = EntityMLP(self.feature_dim, embed_dim)
+        self.self_attention_layer = SelfAttention(embed_dim, heads, dropout_factor)
+        self.output_layer = EntityMLP(embed_dim, embed_dim, 1)
+
+    def _reshape_entities(self, x):
+        if x.shape[-1] != self.input_dim:
+            raise ValueError(
+                f"Expected critic input last dimension {self.input_dim}, "
+                f"got {x.shape[-1]}"
+            )
+        leading_shape = x.shape[:-1]
+        entities = x.reshape(-1, self.entity_count, self.feature_dim)
+        return entities, leading_shape
+
+    def forward(self, x):
+        entities, leading_shape = self._reshape_entities(x)
+        mask = entities[:, :, self.presence_feature_idx] < 0.5
+        embedded = self.embedding(entities)
+        empty_others = embedded[:, 1:, :]
+        self_att, _ = self.self_attention_layer(
+            embedded[:, 0:1, :], empty_others, mask
+        )
+
+        valid = (~mask).to(self_att.dtype).unsqueeze(-1)
+        pooled = (self_att * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
+        value = self.output_layer(pooled)
+        return value.reshape(*leading_shape, 1)
+
+
+def attention(query, key, value, mask=None, dropout=None):
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(query.size(-1))
+    if mask is not None:
+        scores = scores.masked_fill(mask, -1e9)
+    attention_probs = F.softmax(scores, dim=-1)
+    if dropout is not None:
+        attention_probs = dropout(attention_probs)
+    return torch.matmul(attention_probs, value), attention_probs
+
+
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
@@ -263,6 +584,95 @@ def environment(env_type, env_name, env_family, agent_ids, kwargs):
         raise ValueError(f"Unsupported env_type: {env_type}")
 
     return env
+
+
+def infer_entity_shape(input_dim, feature_dim, label):
+    if input_dim % feature_dim != 0:
+        raise ValueError(
+            f"Cannot infer {label} entity shape: input_dim {input_dim} is not "
+            f"divisible by attention_feature_dim {feature_dim}"
+        )
+    return input_dim // feature_dim, feature_dim
+
+
+def resolve_entity_shape(
+    env,
+    method_name,
+    input_dim,
+    fallback_feature_dim,
+    presence_feature_idx,
+    label,
+):
+    method = getattr(env, method_name, None)
+    if method is not None:
+        entity_shape = method()
+    else:
+        entity_shape = infer_entity_shape(input_dim, fallback_feature_dim, label)
+    return validate_entity_shape(
+        input_dim=input_dim,
+        entity_shape=entity_shape,
+        presence_feature_idx=presence_feature_idx,
+        label=label,
+    )
+
+
+def optional_env_value(env, method_name):
+    method = getattr(env, method_name, None)
+    if method is None:
+        return None
+    return method()
+
+
+def make_actor(args, env):
+    if args.actor_model == "mlp":
+        return Actor(
+            input_dim=env.get_obs_size(),
+            hidden_dim=args.actor_hidden_dim,
+            num_layer=args.actor_num_layers,
+            output_dim=env.get_action_size(),
+        )
+    obs_entity_shape = resolve_entity_shape(
+        env=env,
+        method_name="get_obs_entity_shape",
+        input_dim=env.get_obs_size(),
+        fallback_feature_dim=args.attention_feature_dim,
+        presence_feature_idx=args.attention_presence_feature_idx,
+        label="actor",
+    )
+    return AttentionActor(
+        input_dim=env.get_obs_size(),
+        entity_shape=obs_entity_shape,
+        output_dim=env.get_action_size(),
+        embed_dim=args.attention_embed_dim,
+        heads=args.attention_heads,
+        dropout_factor=args.attention_dropout,
+        presence_feature_idx=args.attention_presence_feature_idx,
+    )
+
+
+def make_critic(args, env):
+    if args.critic_model == "mlp":
+        return Critic(
+            input_dim=env.get_state_size(),
+            hidden_dim=args.critic_hidden_dim,
+            num_layer=args.critic_num_layers,
+        )
+    state_entity_shape = resolve_entity_shape(
+        env=env,
+        method_name="get_state_entity_shape",
+        input_dim=env.get_state_size(),
+        fallback_feature_dim=args.attention_feature_dim,
+        presence_feature_idx=args.attention_presence_feature_idx,
+        label="critic",
+    )
+    return AttentionCritic(
+        input_dim=env.get_state_size(),
+        entity_shape=state_entity_shape,
+        embed_dim=args.attention_embed_dim,
+        heads=args.attention_heads,
+        dropout_factor=args.attention_dropout,
+        presence_feature_idx=args.attention_presence_feature_idx,
+    )
 
 
 def norm_d(grads, d):
@@ -416,17 +826,8 @@ if __name__ == "__main__":
     )
 
     ## Initialize the actor, critic and target-critic networks
-    actor = Actor(
-        input_dim=env.get_obs_size(),
-        hidden_dim=args.actor_hidden_dim,
-        num_layer=args.actor_num_layers,
-        output_dim=env.get_action_size(),
-    ).to(device)
-    critic = Critic(
-        input_dim=env.get_state_size(),
-        hidden_dim=args.critic_hidden_dim,
-        num_layer=args.critic_num_layers,
-    ).to(device)
+    actor = make_actor(args, env).to(device)
+    critic = make_critic(args, env).to(device)
 
     Optimizer = getattr(optim, args.optimizer)
     actor_optimizer = Optimizer(actor.parameters(), lr=args.learning_rate_actor)
@@ -463,6 +864,9 @@ if __name__ == "__main__":
         ("n_agents", env.n_agents),
         ("obs_size", env.get_obs_size()),
         ("state_size", env.get_state_size()),
+        ("obs_entity_shape", optional_env_value(env, "get_obs_entity_shape")),
+        ("state_entity_shape", optional_env_value(env, "get_state_entity_shape")),
+        ("obs_feature_names", optional_env_value(env, "get_obs_feature_names")),
         ("action_size", env.get_action_size()),
         ("constructor_kwargs", kwargs),
     ]

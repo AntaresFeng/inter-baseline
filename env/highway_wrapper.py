@@ -122,9 +122,30 @@ class HighwayWrapper(MultiAgentIntersectionEnv):
         shape = self.observation_type.agents_observation_types[0].space().shape
         return int(np.prod(shape))
 
+    def get_obs_entity_shape(self) -> tuple[int, int]:
+        """Single agent observation as (entities, features_per_entity)."""
+        shape = self.observation_type.agents_observation_types[0].space().shape
+        if len(shape) != 2:
+            raise ValueError(
+                "Highway attention models expect 2D Kinematics observations, "
+                f"got observation shape {shape}"
+            )
+        return int(shape[0]), int(shape[1])
+
     def get_state_size(self) -> int:
         """Global state = concatenation of all agents' observations."""
         return self.get_obs_size() * self.n_agents
+
+    def get_state_entity_shape(self) -> tuple[int, int]:
+        """Global state as concatenated per-agent entity observations."""
+        entities, features = self.get_obs_entity_shape()
+        return entities * self.n_agents, features
+
+    def get_obs_feature_names(self) -> tuple[str, ...]:
+        """Kinematics feature names for entity-aware models and logging."""
+        observation = self.config.get("observation", {})
+        observation_config = observation.get("observation_config", {})
+        return tuple(observation_config.get("features", ()))
 
     def get_action_size(self) -> int:
         """Single agent action dimension."""
