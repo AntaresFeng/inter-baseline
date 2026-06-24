@@ -562,12 +562,12 @@ def environment(env_type, env_name, env_family, agent_ids, kwargs):
     #     from env.lbf import LBFWrapper
 
     #     env = LBFWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
-    # elif env_type == "pz":
-    #     from env.pettingzoo_wrapper import PettingZooWrapper
+    elif env_type == "pz":
+        from env.pettingzoo_wrapper import PettingZooWrapper
 
-    #     env = PettingZooWrapper(
-    #         family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-    #     )
+        env = PettingZooWrapper(
+            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
+        )
     else:
         raise ValueError(f"Unsupported env_type: {env_type}")
 

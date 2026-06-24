@@ -13,12 +13,11 @@
 - `demo_highway_wrapper.py`：highway 环境封装示例或快速验证入口。
 - `docs/highway_env_faq.md`：highway-env 环境疑难杂症参考。
 - `docs/highway_intersection_notes.md`：highway-env intersection 环境细节，目前包括动作空间说明和重置时速度
+- `docs/pz_simple_spreead.md`：pettingzoo simple_spreead 环境说明
 
 ## 环境与工具
 
 - 使用 `uv` 管理虚拟环境和运行 Python 命令。
-- 可用命令：`jq`、`rg`、`fd`、`ruff`。
-- 优先使用 `rg` / `fd` 搜索文件和文本
 - Python 命令优先用：
   - `uv run python ...`
 
